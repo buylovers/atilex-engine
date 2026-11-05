@@ -5,7 +5,7 @@ Atilex Briefing Engine v4
 - Endpoint GET /ficha/<id> → HTML visual
 """
 
-import os, json, uuid, logging
+import os, json, uuid, logging, sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, render_template_string
 import anthropic
@@ -15,7 +15,32 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-fichas_store = {}  # {id: {data, html, timestamp}}
+
+# ─── SQLite persistence ───────────────────────
+DB_PATH = os.environ.get("DB_PATH", "/tmp/fichas.db")
+
+def _db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS fichas (
+        id TEXT PRIMARY KEY,
+        html TEXT NOT NULL,
+        data TEXT,
+        created_at TEXT
+    )""")
+    conn.commit()
+    return conn
+
+def _save_ficha(ficha_id, html, data):
+    with _db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO fichas (id, html, data, created_at) VALUES (?,?,?,?)",
+            (ficha_id, html, json.dumps(data), datetime.utcnow().isoformat())
+        )
+
+def _get_ficha(ficha_id):
+    with _db() as conn:
+        row = conn.execute("SELECT html FROM fichas WHERE id=?", (ficha_id,)).fetchone()
+        return row[0] if row else None
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 GHL_API_KEY = os.environ.get("GHL_API_KEY", "")
@@ -44,6 +69,28 @@ def _safe_str(data, *keys):
         v = data.get(k)
         if v and str(v).strip() not in ("", "--", "None"):
             return str(v).strip()
+    return ""
+
+def obtener_ultima_nota_ghl(contact_id):
+    """Obtiene la última nota del contacto via GHL API."""
+    if not contact_id or not GHL_API_KEY:
+        return ""
+    try:
+        resp = requests.get(
+            f"https://services.leadconnectorhq.com/contacts/{contact_id}/notes",
+            headers={"Authorization": f"Bearer {GHL_API_KEY}",
+                     "Content-Type": "application/json",
+                     "Version": "2021-07-28"},
+            timeout=10
+        )
+        if resp.status_code == 200:
+            notes = resp.json().get("notes", [])
+            if notes:
+                # Ordenar por fecha desc, coger la más reciente
+                notes_sorted = sorted(notes, key=lambda n: n.get("dateAdded", ""), reverse=True)
+                return notes_sorted[0].get("body", "")
+    except Exception as e:
+        logger.warning(f"Error obteniendo notas GHL: {e}")
     return ""
 
 def extraer_datos_de_nota(nota_texto):
@@ -319,8 +366,16 @@ def webhook():
         logger.info(f"Webhook recibido: {list(raw.keys())}")
 
         # ── Extraer datos: campos individuales o nota de Lidia ──
+        contact_id_raw = _safe_str(raw, "contact_id", "contactId", "id")
         nota_lidia = _safe_str(raw, "nota_lidia", "conversation_note", "last_note")
         datos = dict(raw)  # copia
+
+        # Si no viene nota en el payload, buscarla en GHL API
+        if not nota_lidia and contact_id_raw:
+            logger.info(f"Buscando nota en GHL API para contacto {contact_id_raw}")
+            nota_lidia = obtener_ultima_nota_ghl(contact_id_raw)
+            if nota_lidia:
+                logger.info(f"Nota encontrada ({len(nota_lidia)} chars)")
 
         if nota_lidia:
             logger.info("nota_lidia detectada → extrayendo datos con Claude")
@@ -339,13 +394,7 @@ def webhook():
         html = generar_ficha_html(datos, calculos, ficha_id)
         ficha_url = f"{BASE_URL}/ficha/{ficha_id}"
 
-        fichas_store[ficha_id] = {
-            "data": datos,
-            "calculos": calculos,
-            "html": html,
-            "url": ficha_url,
-            "timestamp": datetime.now().isoformat(),
-        }
+        _save_ficha(ficha_id, html, datos)
 
         # ── Guardar nota en GHL ──
         nombre = _safe_str(datos, "nombre") or "Cliente"
@@ -392,10 +441,10 @@ def webhook():
 
 @app.route("/ficha/<ficha_id>")
 def ver_ficha(ficha_id):
-    ficha = fichas_store.get(ficha_id)
-    if not ficha:
-        return "<h2>Ficha no encontrada o el servidor se reinició. Revisa la nota del contacto en GHL.</h2>", 404
-    return ficha["html"]
+    html = _get_ficha(ficha_id)
+    if not html:
+        return "<h2>Ficha no encontrada. El ID puede ser incorrecto.</h2>", 404
+    return html
 
 
 @app.route("/last")
@@ -408,7 +457,7 @@ def health():
     return jsonify({
         "status": "ok",
         "version": "v4",
-        "fichas_en_memoria": len(fichas_store),
+        "fichas_en_db": _db().execute("SELECT COUNT(*) FROM fichas").fetchone()[0],
         "anthropic_key": "✅" if ANTHROPIC_API_KEY else "❌",
         "ghl_key": "✅" if GHL_API_KEY else "❌",
         "base_url": BASE_URL,
