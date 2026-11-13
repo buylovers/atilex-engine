@@ -128,7 +128,7 @@ def obtener_conversacion_ghl(contact_id):
             timeout=10
         )
         if msgs_resp.status_code != 200:
-            logger.warning(f"Error obteniendo mensajes: {msgs_resp.status_code}")
+            logger.warning(f"Error obteniendo mensajes: {msgs_resp.status_code} - {msgs_resp.text[:300]}")
             return ""
         messages = msgs_resp.json().get("messages", {}).get("messages", [])
         if not messages:
