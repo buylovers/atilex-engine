@@ -1,5 +1,3 @@
-"""
-
 Atilex Briefing Engine v4
 - Compatible con v3 (campos individuales)
 - NUEVO: acepta nota_lidia (texto de la nota de Lidia) y extrae datos con Claude
@@ -92,6 +90,61 @@ def obtener_ultima_nota_ghl(contact_id):
                 return notes_sorted[0].get("body", "")
     except Exception as e:
         logger.warning(f"Error obteniendo notas GHL: {e}")
+    return ""
+
+def obtener_conversacion_ghl(contact_id):
+    """Obtiene el transcript completo de la conversación via GHL Conversations API."""
+    if not contact_id or not GHL_API_KEY or not GHL_LOCATION_ID:
+        return ""
+    try:
+        # Buscar conversaciones del contacto
+        resp = requests.get(
+            "https://services.leadconnectorhq.com/conversations/search",
+            params={"contactId": contact_id, "locationId": GHL_LOCATION_ID},
+            headers={"Authorization": f"Bearer {GHL_API_KEY}",
+                     "Content-Type": "application/json",
+                     "Version": "2021-07-28"},
+            timeout=10
+        )
+        if resp.status_code != 200:
+            logger.warning(f"Error buscando conversaciones: {resp.status_code} {resp.text[:200]}")
+            return ""
+        conversations = resp.json().get("conversations", [])
+        if not conversations:
+            logger.info("No se encontraron conversaciones para el contacto")
+            return ""
+        # Coger la más reciente
+        conversation_id = conversations[0].get("id")
+        if not conversation_id:
+            return ""
+        logger.info(f"Conversación encontrada: {conversation_id}")
+        # Obtener mensajes
+        msgs_resp = requests.get(
+            f"https://services.leadconnectorhq.com/conversations/{conversation_id}/messages",
+            headers={"Authorization": f"Bearer {GHL_API_KEY}",
+                     "Content-Type": "application/json",
+                     "Version": "2021-07-28"},
+            timeout=10
+        )
+        if msgs_resp.status_code != 200:
+            logger.warning(f"Error obteniendo mensajes: {msgs_resp.status_code}")
+            return ""
+        messages = msgs_resp.json().get("messages", {}).get("messages", [])
+        if not messages:
+            return ""
+        # Construir transcript
+        transcript_lines = []
+        for msg in messages:
+            direction = msg.get("direction", "")
+            body = msg.get("body", "").strip()
+            if body:
+                role = "Cliente" if direction == "inbound" else "Lidia"
+                transcript_lines.append(f"{role}: {body}")
+        transcript = "\n".join(transcript_lines)
+        logger.info(f"Transcript obtenido: {len(transcript)} chars, {len(transcript_lines)} mensajes")
+        return transcript
+    except Exception as e:
+        logger.warning(f"Error obteniendo conversación GHL: {e}")
     return ""
  
 def extraer_datos_de_nota(nota_texto):
@@ -377,6 +430,12 @@ def webhook():
             nota_lidia = obtener_ultima_nota_ghl(contact_id_raw)
             if nota_lidia:
                 logger.info(f"Nota encontrada ({len(nota_lidia)} chars)")
+            else:
+                # Fallback: obtener conversación completa via Conversations API
+                logger.info(f"Sin nota previa — buscando conversación GHL para contacto {contact_id_raw}")
+                nota_lidia = obtener_conversacion_ghl(contact_id_raw)
+                if nota_lidia:
+                    logger.info(f"Transcript de conversación obtenido ({len(nota_lidia)} chars)")
  
         if nota_lidia:
             logger.info("nota_lidia detectada → extrayendo datos con Claude")
