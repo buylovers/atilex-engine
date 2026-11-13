@@ -110,16 +110,27 @@ def obtener_conversacion_ghl(contact_id):
         if resp.status_code != 200:
             logger.warning(f"Error buscando conversaciones: {resp.status_code} {resp.text[:200]}")
             return ""
-        conversations = resp.json().get("conversations", [])
+        data = resp.json()
+        conversations = data.get("conversations", [])
         if not conversations:
             logger.info("No se encontraron conversaciones para el contacto")
             return ""
         # Coger la más reciente
-        conversation_id = conversations[0].get("id")
+        conv = conversations[0]
+        conversation_id = conv.get("id")
         if not conversation_id:
             return ""
         logger.info(f"Conversación encontrada: {conversation_id}")
-        # Obtener mensajes
+        # Log campos disponibles en el objeto conversación
+        logger.info(f"Campos conversación: {list(conv.keys())}")
+
+        # Intentar extraer lastMessageBody directamente del objeto conversación
+        last_body = conv.get("lastMessageBody", "") or conv.get("lastMessage", "") or ""
+        if last_body:
+            logger.info(f"lastMessageBody encontrado ({len(last_body)} chars)")
+            return f"Último mensaje del cliente: {last_body}"
+
+        # Obtener mensajes (puede fallar por scope)
         msgs_resp = requests.get(
             f"https://services.leadconnectorhq.com/conversations/{conversation_id}/messages",
             headers={"Authorization": f"Bearer {GHL_API_KEY}",
