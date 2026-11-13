@@ -124,7 +124,7 @@ def obtener_conversacion_ghl(contact_id):
             f"https://services.leadconnectorhq.com/conversations/{conversation_id}/messages",
             headers={"Authorization": f"Bearer {GHL_API_KEY}",
                      "Content-Type": "application/json",
-                     "Version": "2021-07-28"},
+                     "Version": "2021-04-15"},
             timeout=10
         )
         if msgs_resp.status_code != 200:
