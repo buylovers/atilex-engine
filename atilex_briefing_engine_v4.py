@@ -1,7 +1,8 @@
+"""
 Atilex Briefing Engine v4
 - Compatible con v3 (campos individuales)
 - NUEVO: acepta nota_lidia (texto de la nota de Lidia) y extrae datos con Claude
-- Endpoint GET /ficha/<id> → HTML visual
+- Endpoint GET /ficha/<id> -> HTML visual
 """
  
 import os, json, uuid, logging, sqlite3
